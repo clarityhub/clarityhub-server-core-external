@@ -1,0 +1,187 @@
+service: persato-core-external
+
+plugins:
+  - serverless-webpack
+  - serverless-dynamodb-local
+  - serverless-offline
+  # - serverless-offline-scheduler
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  bugsnagApiKey: 
+  mediaBucketName: ${self:custom.stage}-ext-media.clarityhub.io
+  jwksUri: 
+  schedule:
+    local: true
+    development: false
+    production: false
+  s3Creds:
+    local:
+      endpoint: https://s3.us-west-2.amazonaws.com
+      region: us-west-2
+      accessKeyId:
+      secretAccessKey:
+    development:
+      endpoint: https://s3.${self:provider.region}.amazonaws.com
+      region: ""
+      accessKeyId: ""
+      secretAccessKey: ""
+    production:
+      endpoint: https://s3.${self:provider.region}.amazonaws.com
+      region: ""
+      accessKeyId: ""
+      secretAccessKey: ""
+  webpack:
+    webpackConfig: ./configs/webpack.config.js
+    includeModules: true
+  dynamodb:
+    stages:
+      - local
+    start:
+      port: 8000
+      migrate: true
+  serverless-offline:
+    port: 4000
+  cors:
+    origin: '*'
+    headers:
+      - Content-Type
+      - X-Amz-Date
+      - Authorization
+      - X-Api-Key
+      - X-Amz-Security-Token
+      - X-Amz-User-Agent
+      - X-ClarityHub-Organization
+    allowCredentials: false
+
+provider:
+  name: aws
+  runtime: nodejs8.10
+  stage: ${opt:stage, 'local'}
+  region: ${env:AWS_REGION, 'us-west-2'}
+  memorySize: 512
+  timeout: 7
+
+  apiKeys:
+    - ivanKey
+    - fiverrKey
+  usagePlan:
+    quota:
+      limit: 1000
+      offset: 0
+      period: DAY
+    throttle:
+      burstLimit: 40
+      rateLimit: 10
+
+  environment:
+    mediaBucketName: ${self:custom.mediaBucketName}
+    STAGE: ${self:provider.stage}
+    REGION: ${self:provider.region}
+    BUGSNAG_API_KEY: ${self:custom.bugsnagApiKey}
+    JWKS_URI: ${self:custom.jwksUri}
+    S3_ENDPOINT: ${self:custom.s3Creds.${self:custom.stage}.endpoint}
+    LOCAL_S3_REGION: ${self:custom.s3Creds.${self:custom.stage}.region}
+    LOCAL_S3_ACCESS_KEY_ID: ${self:custom.s3Creds.${self:custom.stage}.accessKeyId}
+    LOCAL_S3_SECRET_ACESS_KEY: ${self:custom.s3Creds.${self:custom.stage}.secretAccessKey}
+    LOCAL_TRANSCRIBE_ACCESS_KEY_ID: ${self:custom.s3Creds.${self:custom.stage}.accessKeyId}
+    LOCAL_TRANSCRIBE_SECRET_ACESS_KEY: ${self:custom.s3Creds.${self:custom.stage}.secretAccessKey}
+
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:CreateTable
+        - dynamodb:UpdateTable
+        - dynamodb:ListTables
+        - dynamodb:DescribeTable
+        - dynamodb:Query
+        - dynamodb:Scan
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:DeleteItem
+      Resource: "arn:aws:dynamodb:us-west-2:*:*"
+    - Effect: Allow
+      Action:
+        - transcribe:*
+      Resource: "*"
+    - Effect: Allow
+      Action:
+        - cognito-idp:AdminGetUser
+      Resource: "arn:aws:cognito-idp:us-west-2:*:*"
+    - Effect: Allow
+      Action:
+        - s3:DeleteObject
+        - s3:GetObject
+        - s3:PutObject
+      Resource: "arn:aws:s3:::${self:custom.mediaBucketName}/*"
+    - Effect: Allow
+      Action:
+        - ses:SendEmail
+        - ses:SendRawEmail
+      Resource: "*"
+    - Effect: Allow
+      Action:
+        - firehose:*
+      Resource: "*"
+
+# package:
+#   include:
+#     - docs/**
+#     - schemas/**
+
+functions:
+  # ===== Health Endpoint =====
+  health:
+    handler: src/health.default
+    events:
+      - http:
+          path: health
+          method: GET
+
+  # ===== API Endpoints =====
+  root:
+    handler: src/router.default
+    events:
+      - http:
+          path: /
+          method: any
+          cors: true
+      - http:
+          path: /{proxy+}
+          method: any
+          cors: true
+  transcriptionJob:
+    handler: src/transcription.default
+    events:
+      - cloudwatchEvent:
+          event:
+            source:
+              - 'aws.transcribe'
+            detail-type:
+              - 'Transcribe Job State Change'
+            detail:
+              TranscriptionJobStatus:
+                - 'COMPLETED'
+                - 'FAILED'
+  localScheduler:
+    handler: src/local-transcript-checker.default
+    events:
+      - http:
+          path: /local/scheduler
+          method: any
+          cors: true
+          enabled: ${self:custom.schedule.${self:custom.stage}}
+
+resources:
+  # API Gateway Errors
+  - ${file(resources/api-gateway-errors.yml)}
+  # DynamoDB
+  # - ${file(resources/dynamodb-table.yml)}
+  # Cognito
+  # - ${file(resources/cognito-user-pool.yml)}
+  # - ${file(resources/cognito-identity-pool.yml)}
+  # S3
+  - ${file(resources/s3-bucket.yml)}
+  # Kinesis Firehose
+  # - ${file(resources/firehose.yml)}
